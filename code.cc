@@ -1,11 +1,10 @@
-// Made immediate values first-class citizens.
+// Richer telemetry counters in debug mode.
 
 #include <iostream>
 #include <string>
 #include <functional>
 #include <queue>
 #include <thread>
-#include <chrono>
 #include <future>
 #include <atomic>
 #include <mutex>
@@ -26,6 +25,7 @@ using std::function;
 using std::queue;
 using std::string;
 using std::to_string;
+using std::vector;
 using namespace std::chrono_literals;
 using std::atomic_bool;
 using std::atomic_int;
@@ -41,7 +41,6 @@ using std::shared_ptr;
 using std::terminate;
 using std::thread;
 using std::unique_ptr;
-using std::vector;
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
@@ -103,12 +102,28 @@ struct CoroutineLifetime {
   virtual void ResumeFromExecutorWorkerThread() = 0;
 };
 
+#ifdef TELEMETRY
+struct ExecutorStats {
+  // NOTE(dkorolev): These should be `atomic`-s and/or mutex-locked in real, multithreaded code.
+  int64_t total_worker_steps = 0;
+  int64_t total_resume_steps = 0;
+  int64_t total_awaitable_ready = 0;
+  int64_t total_awaitable_need_to_wait = 0;
+  int64_t total_immediate_ready = 0;
+  int64_t total_sleep_resumes = 0;
+  ~ExecutorStats() {
+    cout << "Executor total worker steps: " << total_worker_steps << endl;
+    cout << "Executor total resume steps: " << total_resume_steps << endl;
+    cout << "Executor total immediate / ready / waiting: " << total_awaitable_ready << " / " << total_immediate_ready
+         << " / " << total_awaitable_need_to_wait << endl;
+    cout << "Executor total sleep resumes: " << total_sleep_resumes << endl;
+  }
+};
+#endif
+
 class ExecutorInstance {
  private:
   thread worker;
-#ifdef TELEMETRY
-  int64_t worker_total_steps = 0;
-#endif
   TimestampMS const t0;
 
   bool executor_time_to_terminate_thread = false;
@@ -173,7 +188,7 @@ class ExecutorInstance {
       }
       next_task();
 #ifdef TELEMETRY
-      ++worker_total_steps;
+      ++stats.total_worker_steps;
 #endif
     }
   }
@@ -199,11 +214,12 @@ class ExecutorInstance {
   }
 
  public:
+#ifdef TELEMETRY
+  ExecutorStats stats;
+#endif
+
   ~ExecutorInstance() {
     worker.join();
-#ifdef TELEMETRY
-    cout << "Executor worker total steps: " << worker_total_steps << endl;
-#endif
     unlock_when_done.lock();
   }
 
@@ -347,6 +363,9 @@ struct Async : CoroutineAwaitResume<RETVAL> {
     void unhandled_exception() noexcept { terminate(); }
 
     void ResumeFromExecutorWorkerThread() override {
+#ifdef TELEMETRY
+      ++Executor().stats.total_resume_steps;
+#endif
       std::coroutine_handle<promise_type>::from_promise(*this).resume();
     }
   };
@@ -358,8 +377,21 @@ struct Async : CoroutineAwaitResume<RETVAL> {
   bool await_ready() noexcept {
     if (CoroutineAwaitResume<RETVAL>::pself) {
       lock_guard<mutex> lock(CoroutineAwaitResume<RETVAL>::pself->mut);
+#ifndef TELEMETRY
       return CoroutineAwaitResume<RETVAL>::pself->returned;
+#else
+      if (CoroutineAwaitResume<RETVAL>::pself->returned) {
+        ++Executor().stats.total_awaitable_ready;
+        return true;
+      } else {
+        ++Executor().stats.total_awaitable_need_to_wait;
+        return false;
+      }
+#endif
     } else {
+#ifdef TELEMETRY
+      ++Executor().stats.total_immediate_ready;
+#endif
       return true;
     }
   }
@@ -389,7 +421,12 @@ class Sleep final {
   constexpr bool await_ready() noexcept { return false; }
 
   void await_suspend(std::coroutine_handle<> h) noexcept {
-    Executor().Schedule(ms, [h]() { h.resume(); });
+    Executor().Schedule(ms, [h]() {
+#ifdef TELEMETRY
+      ++Executor().stats.total_sleep_resumes;
+#endif
+      h.resume();
+    });
   }
 
   void await_resume() noexcept {}
