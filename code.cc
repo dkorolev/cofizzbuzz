@@ -1,4 +1,4 @@
-// Added real `sleep()`-s back to the now-simulated time.
+// Made `cout` thread-safe.
 
 #include <condition_variable>
 #include <iostream>
@@ -25,9 +25,8 @@
 
 using std::atomic_bool;
 using std::atomic_int;
-using std::cout;
+using std::condition_variable;
 using std::deque;
-using std::endl;
 using std::flush;
 using std::function;
 using std::future;
@@ -47,10 +46,39 @@ using std::thread;
 using std::to_string;
 using std::unique_lock;
 using std::unique_ptr;
-using namespace std::chrono_literals;
-using std::condition_variable;
 using std::vector;
+using namespace std::chrono_literals;
 using std::this_thread::sleep_for;
+
+struct ThreadSafeCoutSection {
+  lock_guard<mutex> lock;
+  ThreadSafeCoutSection(mutex& mut) : lock(mut) {}
+
+  struct Endl {};
+
+  template <typename T>
+  ThreadSafeCoutSection& operator<<(T&& x) {
+    std::cout << std::forward<T>(x);
+    return *this;
+  }
+
+  ThreadSafeCoutSection& operator<<(Endl) {
+    std::cout << std::endl;
+    return *this;
+  }
+};
+
+struct ThreadSafeCout {
+  mutex mut;
+
+  template <typename T>
+  ThreadSafeCoutSection& operator<<(T&& x) {
+    return ThreadSafeCoutSection(mut) << std::forward<T>(x);
+  }
+};
+
+static ThreadSafeCout cout;
+static ThreadSafeCoutSection::Endl endl;
 
 inline string& CurrentThreadName() {
   static thread_local string current_thread_name = "<a yet unnamed thread>";
