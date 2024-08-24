@@ -1,4 +1,4 @@
-// The time is now simulated.
+// Added real `sleep()`-s back to the now-simulated time.
 
 #include <condition_variable>
 #include <iostream>
@@ -20,9 +20,11 @@
 #define PRINT_SIMULATED_TIME
 #endif
 
+// Sleeping for 1ms per simulated time unit.
+#define SLEEP_PER_SIMULATED_TIME_UNIT 1ms
+
 using std::atomic_bool;
 using std::atomic_int;
-using std::condition_variable;
 using std::cout;
 using std::deque;
 using std::endl;
@@ -45,7 +47,10 @@ using std::thread;
 using std::to_string;
 using std::unique_lock;
 using std::unique_ptr;
+using namespace std::chrono_literals;
+using std::condition_variable;
 using std::vector;
+using std::this_thread::sleep_for;
 
 inline string& CurrentThreadName() {
   static thread_local string current_thread_name = "<a yet unnamed thread>";
@@ -172,6 +177,9 @@ class ExecutorInstance {
           if (time_now < it_time_moment->first) {
 #ifdef PRINT_SIMULATED_TIME
             cout << "Advancing time from " << time_now << " to " << it_time_moment->first << endl;
+#endif
+#ifdef SLEEP_PER_SIMULATED_TIME_UNIT
+            sleep_for(SLEEP_PER_SIMULATED_TIME_UNIT * (it_time_moment->first.AsNumber() - time_now.AsNumber()));
 #endif
             time_now = it_time_moment->first;
           }
