@@ -1,4 +1,5 @@
-// Catching `Ctrl+\` (SIGQUIT) and printing the coroutines executor state.
+// NOTE(dkorolev): This is not making it into the blog post. Just me testing things.
+// Introduced `FN_TYPE`, and a typed `FN_DECL`. Ugly but works.
 
 #include <condition_variable>
 #include <iostream>
@@ -69,6 +70,16 @@ using std::this_thread::sleep_for;
     return name##_impl(std::forward<ARGS>(args)...);                  \
   }                                                                   \
   inline Async<retval> name##_impl(__VA_ARGS__)
+
+#define FN_DECL(name, args_in_parens, retval, ...)                    \
+  inline Async<retval> name##_impl(__VA_ARGS__);                      \
+  Async<retval> name(__VA_ARGS__) {                                   \
+    Executor().AnnotateNextRegisterCallAs(#name, __FILE__, __LINE__); \
+    return name##_impl args_in_parens;                                \
+  }                                                                   \
+  inline Async<retval> name##_impl(__VA_ARGS__)
+
+#define FN_TYPE(RETVAL, ARGS) function<Async<RETVAL>(ARGS)>
 
 struct ThreadSafeCoutSection {
   lock_guard<mutex> lock;
@@ -703,16 +714,15 @@ FN(IsDivisibleByFive, bool, int value) {
   RETURN((value % 5) == 0);
 }
 
-// NOTE(dkorolev): The current implementation of `FN` makes it impossible to pass the function as a parameter.
-// So, hardcoding `Print` into `CoroFizzBuzz` for now. Sigh.
-FN(Printer, bool, string s) {
+// NOTE(dkorolev): This `(s)` is ugly, but I want to test this strong typing solution.
+FN_DECL(Print, (s), bool, string s) {
   static int total = 0;
   cout << ++total << " : " << s << ", at " << Executor().Now() << " time units, from thread " << CurrentThreadName()
        << endl;
   RETURN(total < 15);
 }
 
-FN(CoroFizzBuzz, void) {
+FN(CoroFizzBuzz, void, FN_TYPE(bool, (string)) printer) {
   int value = 0;
   while (true) {
     ++value;
@@ -727,17 +737,17 @@ FN(CoroFizzBuzz, void) {
     bool const d3 = AWAIT(awaitable_d3);
     bool const d5 = AWAIT(awaitable_d5);
     if (d3) {
-      if (!AWAIT(Printer("Fizz"))) {
+      if (!AWAIT(printer("Fizz"))) {
         RETURN();
       }
     }
     if (d5) {
-      if (!AWAIT(Printer("Buzz"))) {
+      if (!AWAIT(printer("Buzz"))) {
         RETURN();
       }
     }
     if (!d3 && !d5) {
-      if (!AWAIT(Printer(to_string(value)))) {
+      if (!AWAIT(printer(to_string(value)))) {
         RETURN();
       }
     }
@@ -747,7 +757,7 @@ FN(CoroFizzBuzz, void) {
 void RunCoroFizzBuzz() {
   ExecutorScope executor;
 
-  CoroFizzBuzz();
+  CoroFizzBuzz(Print);
 
   cout << "main() done, but will wait for the executor to complete its tasks." << endl;
 }
